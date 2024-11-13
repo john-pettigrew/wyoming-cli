@@ -71,7 +71,7 @@ func (w *WyomingConnection) ReceiveAudio(outputRawData bool, outputPath string) 
 	}
 
 	if !outputRawData {
-		err = utils.ConvertPCMAudioToWav(tempFile.Name(), outputPath, audioData.Rate, audioData.Channels)
+		err = utils.ConvertPCMAudioToWav(tempFile.Name(), outputPath, int32(audioData.Rate), int16(audioData.Channels))
 		if err != nil {
 			return err
 		}
