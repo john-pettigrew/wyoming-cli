@@ -7,7 +7,7 @@ import (
 	"os"
 )
 
-func ConvertPCMAudioToWav(PCMFilePath, outputWavFilePath string, rate int32, channels int16) error {
+func ConvertPCMAudioToWav(PCMFilePath, outputWavFilePath string, rate int32, channels int16, bitsPerSample int16) error {
 	// Validate PCM file
 	PCMFileStat, err := os.Stat(PCMFilePath)
 	if err != nil {
@@ -39,7 +39,6 @@ func ConvertPCMAudioToWav(PCMFilePath, outputWavFilePath string, rate int32, cha
 	defer PCMFile.Close()
 
 	// write WAV header
-	var bitsPerSample int16 = 16
 	var blockAlign int16 = channels * (bitsPerSample / 8)
 	var byteRate int32 = rate * int32(blockAlign)
 
