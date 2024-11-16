@@ -4,10 +4,7 @@ import (
 	"bufio"
 	"encoding/binary"
 	"encoding/json"
-	"errors"
-	"os"
-
-	"github.com/john-pettigrew/wyoming-cli/utils"
+	"io"
 )
 
 var AudioStartMessageType string = "audio-start"
@@ -21,46 +18,28 @@ type WyomingAudioData struct {
 	Timestamp string `json:"timestamp"`
 }
 
-func (w *WyomingConnection) ReceiveAudio(outputRawData bool, outputPath string) error {
+func (w *WyomingConnection) ReceiveAudio(writer io.Writer) (WyomingAudioData, error) {
 	var audioData WyomingAudioData
 	reader := bufio.NewReader(w.Conn)
-
-	tempFile, err := os.CreateTemp("", "wyoming-audio")
-	if err != nil {
-		return err
-	}
-	defer tempFile.Close()
-	defer os.Remove(tempFile.Name())
-
-	if outputPath == "" && !outputRawData {
-		return errors.New("missing output path")
-	}
 
 	for {
 		res, err := w.ReceiveMessageUsingReader(reader)
 		if err != nil {
-			return err
+			return WyomingAudioData{}, err
 		}
 
 		if res.Message.Type == AudioChunkMessageType {
 			if audioData.Rate == 0 && len(res.Data) > 0 {
 				err = json.Unmarshal(res.Data, &audioData)
 				if err != nil {
-					return err
+					return WyomingAudioData{}, err
 				}
 			}
 
 			if len(res.Payload) > 0 {
-				if outputRawData {
-					err = binary.Write(os.Stdout, binary.LittleEndian, res.Payload)
-					if err != nil {
-						return err
-					}
-				} else {
-					_, err = tempFile.Write(res.Payload)
-					if err != nil {
-						return err
-					}
+				err = binary.Write(writer, binary.LittleEndian, res.Payload)
+				if err != nil {
+					return WyomingAudioData{}, err
 				}
 			}
 		}
@@ -70,12 +49,5 @@ func (w *WyomingConnection) ReceiveAudio(outputRawData bool, outputPath string) 
 		}
 	}
 
-	if !outputRawData {
-		err = utils.ConvertPCMAudioToWav(tempFile.Name(), outputPath, int32(audioData.Rate), int16(audioData.Channels), int16(audioData.Width*8))
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return audioData, nil
 }

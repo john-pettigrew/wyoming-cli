@@ -1,5 +1,7 @@
 package wyoming
 
+import "io"
+
 var SynthesizeMessageType string = "synthesize"
 
 type SynthesizeVoiceData struct {
@@ -29,19 +31,19 @@ type WyomingVoiceServicesTTSData struct {
 	Version     string             `json:"version,omitempty"`
 }
 
-func (w *WyomingConnection) SythesizeAudio(text string, voiceData SynthesizeVoiceData, outputRawData bool, outputFilePath string) error {
+func (w *WyomingConnection) SynthesizeAudio(text string, voiceData SynthesizeVoiceData, writer io.Writer) (WyomingAudioData, error) {
 	err := w.SendMessage(WyomingMessage{Type: SynthesizeMessageType, Data: SynthesizeData{
 		Text:  text,
 		Voice: voiceData,
 	}})
 	if err != nil {
-		return err
+		return WyomingAudioData{}, err
 	}
 
-	err = w.ReceiveAudio(outputRawData, outputFilePath)
+	audioData, err := w.ReceiveAudio(writer)
 	if err != nil {
-		return err
+		return WyomingAudioData{}, err
 	}
 
-	return nil
+	return audioData, nil
 }

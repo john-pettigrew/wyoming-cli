@@ -4,8 +4,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 
+	"github.com/john-pettigrew/wyoming-cli/utils"
 	"github.com/john-pettigrew/wyoming-cli/wyoming"
 )
 
@@ -67,10 +69,33 @@ func main() {
 		os.Exit(1)
 	}
 
+	var writer io.Writer = os.Stdout
+	var tempFile *os.File
+	if !(*outputRawData) {
+		tempFile, err = os.CreateTemp("", "wyoming-audio")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		defer tempFile.Close()
+		defer os.Remove(tempFile.Name())
+
+		writer = tempFile
+	}
+
 	// generate audio
-	err = wyomingConn.SythesizeAudio(*text, wyoming.SynthesizeVoiceData{Name: *voiceName}, *outputRawData, *outputFilePath)
+	audioData, err := wyomingConn.SynthesizeAudio(*text, wyoming.SynthesizeVoiceData{Name: *voiceName}, writer)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+
+	// convert audio
+	if !(*outputRawData) {
+		err = utils.ConvertPCMAudioToWav(tempFile.Name(), *outputFilePath, int32(audioData.Rate), int16(audioData.Channels), int16(audioData.Width*8))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	}
 }
