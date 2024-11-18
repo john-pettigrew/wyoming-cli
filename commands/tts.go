@@ -1,15 +1,14 @@
-package main
+package commands
 
 import (
 	"errors"
 	"flag"
-	"fmt"
 	"os"
 
 	"github.com/john-pettigrew/wyoming-cli/wyoming"
 )
 
-func validateInputs(text, serverAddr, outputFilePath string, outputRawData bool) error {
+func validateInputsTTS(text, serverAddr, outputFilePath string, outputRawData bool) error {
 	if text == "" {
 		return errors.New("missing text")
 	}
@@ -32,35 +31,35 @@ func validateInputs(text, serverAddr, outputFilePath string, outputRawData bool)
 	return nil
 }
 
-func parseAndValidateFlags() (string, string, string, string, bool, error) {
-	text := flag.String("text", "", "text to be spoken")
-	serverAddr := flag.String("addr", "localhost:10200", "address and port for tts Wyoming server")
-	outputFilePath := flag.String("output_file", "", "output file path")
-	outputRawData := flag.Bool("output-raw", false, "stream audio data to stdout")
+func parseAndValidateFlagsTTS(currentFlag *flag.FlagSet) (string, string, string, string, bool, error) {
+	text := currentFlag.String("text", "", "text to be spoken")
+	serverAddr := currentFlag.String("addr", "localhost:10200", "address and port for tts Wyoming server")
+	outputFilePath := currentFlag.String("output_file", "", "output file path")
+	outputRawData := currentFlag.Bool("output-raw", false, "stream audio data to stdout")
 
-	voiceName := flag.String("voice-name", "", "voice name")
+	voiceName := currentFlag.String("voice-name", "", "voice name")
 
-	flag.Parse()
+	currentFlag.Parse(os.Args[2:])
 
-	if err := validateInputs(*text, *serverAddr, *outputFilePath, *outputRawData); err != nil {
+	if err := validateInputsTTS(*text, *serverAddr, *outputFilePath, *outputRawData); err != nil {
 		return "", "", "", "", false, err
 	}
 
 	return *text, *serverAddr, *outputFilePath, *voiceName, *outputRawData, nil
 }
 
-func main() {
-	text, serverAddr, outputFilePath, voiceName, outputRawData, err := parseAndValidateFlags()
+func TTS() error {
+	currentFlag := flag.NewFlagSet("tts", flag.ExitOnError)
+
+	text, serverAddr, outputFilePath, voiceName, outputRawData, err := parseAndValidateFlagsTTS(currentFlag)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return err
 	}
 
 	// connect to server
 	wyomingConn, err := wyoming.Connect(serverAddr)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return err
 	}
 	defer wyomingConn.Disconnect()
 
@@ -68,16 +67,16 @@ func main() {
 	if outputRawData {
 		err = wyomingConn.SynthesizeAudioToStdout(text, wyoming.SynthesizeVoiceData{Name: voiceName})
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+			return err
 		}
 
-		return
+		return nil
 	}
 
 	err = wyomingConn.SynthesizeAudioToWAVFile(text, wyoming.SynthesizeVoiceData{Name: voiceName}, outputFilePath)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return err
 	}
+
+	return nil
 }
