@@ -24,7 +24,8 @@ type WyomingResponse struct {
 }
 
 type WyomingConnection struct {
-	Conn net.Conn
+	Conn          net.Conn
+	VoiceServices WyomingVoiceServicesData
 }
 
 type WyomingAttribution struct {
@@ -36,10 +37,13 @@ type WyomingVoiceServicesData struct {
 	TTS []WyomingVoiceServicesTTSData `json:"tts,omitempty"`
 }
 
+// Disconnect disconnects from the Wyoming server.
 func (w *WyomingConnection) Disconnect() error {
 	return w.Conn.Close()
 }
 
+// GetAvailableServices returns the voice services reported to be supported by the
+// Wyoming server.
 func (w *WyomingConnection) GetAvailableServices() (WyomingVoiceServicesData, error) {
 	w.SendMessage(WyomingMessage{Type: DescribeMessageType})
 
@@ -58,6 +62,7 @@ func (w *WyomingConnection) GetAvailableServices() (WyomingVoiceServicesData, er
 	return voiceServices, nil
 }
 
+// SendMessage sends a message to a Wyoming server followed by a newline character.
 func (w *WyomingConnection) SendMessage(msg WyomingMessage) error {
 	jsonMessage, err := json.Marshal(msg)
 	if err != nil {
@@ -68,11 +73,14 @@ func (w *WyomingConnection) SendMessage(msg WyomingMessage) error {
 	return nil
 }
 
+// ReceiveMessage receives a message from a Wyoming server.
 func (w *WyomingConnection) ReceiveMessage() (WyomingResponse, error) {
 	reader := bufio.NewReader(w.Conn)
 	return w.ReceiveMessageUsingReader(reader)
 }
 
+// ReceiveMessageUsingReader receives a message from a Wyoming server using reader. This can
+// be helpful if multiple messages are being read or if a larger buffer size is needed.
 func (w *WyomingConnection) ReceiveMessageUsingReader(reader *bufio.Reader) (WyomingResponse, error) {
 	res := WyomingResponse{Message: WyomingMessage{}}
 
@@ -119,11 +127,18 @@ func (w *WyomingConnection) ReceiveMessageUsingReader(reader *bufio.Reader) (Wyo
 	return res, nil
 }
 
+// Connect connects to a Wyoming server and checks supported features.
 func Connect(serverAddr string) (WyomingConnection, error) {
 	conn, err := net.Dial("tcp", serverAddr)
 	if err != nil {
 		return WyomingConnection{}, err
 	}
 
-	return WyomingConnection{Conn: conn}, nil
+	w := WyomingConnection{Conn: conn}
+	w.VoiceServices, err = w.GetAvailableServices()
+	if err != nil {
+		return WyomingConnection{}, err
+	}
+
+	return w, nil
 }

@@ -7,26 +7,16 @@ import (
 	"os"
 )
 
-func ConvertPCMAudioToWav(PCMFilePath, outputWavFilePath string, rate int32, channels int16, bitsPerSample int16) error {
-	// Validate PCM file
-	PCMFileStat, err := os.Stat(PCMFilePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return errors.New("missing PCM file")
-		}
-		return err
-	}
-
-	// Validate result file
-	_, err = os.Stat(outputWavFilePath)
+// ConvertPCMAudioFileToWAVFile converts the PCM audio file located at PCMFilePath to a new WAV file located at WAVFilePath.
+func ConvertPCMAudioFileToWAVFile(WAVFilePath, PCMFilePath string, rate int32, channels int16, bitsPerSample int16) error {
+	_, err := os.Stat(WAVFilePath)
 	if err == nil {
 		return errors.New("output file already exists")
 	} else if !os.IsNotExist(err) {
 		return err
 	}
 
-	// open files
-	outputFile, err := os.Create(outputWavFilePath)
+	outputFile, err := os.Create(WAVFilePath)
 	if err != nil {
 		return err
 	}
@@ -38,15 +28,30 @@ func ConvertPCMAudioToWav(PCMFilePath, outputWavFilePath string, rate int32, cha
 	}
 	defer PCMFile.Close()
 
+	PCMFileStat, err := PCMFile.Stat()
+	if err != nil {
+		return err
+	}
+
+	err = ConvertPCMAudioToWAV(outputFile, PCMFile, int(PCMFileStat.Size()), rate, channels, bitsPerSample)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// ConvertPCMAudioToWAV writes necessary WAV file header data and PCM audio data from PCMReader to WAVWriter.
+func ConvertPCMAudioToWAV(WAVWriter io.Writer, PCMReader io.Reader, PCMDataLength int, rate int32, channels int16, bitsPerSample int16) error {
 	// write WAV header
 	var blockAlign int16 = channels * (bitsPerSample / 8)
 	var byteRate int32 = rate * int32(blockAlign)
 
 	WAVHeaderFields := []any{
 		// RIFF
-		[]byte("RIFF"),                 // Chunk ID
-		int32(36 + PCMFileStat.Size()), // Chunk Size
-		[]byte("WAVE"),                 // Format
+		[]byte("RIFF"),            // Chunk ID
+		int32(36 + PCMDataLength), // Chunk Size
+		[]byte("WAVE"),            // Format
 
 		// fmt
 		[]byte("fmt "),       // Subchunk1 ID
@@ -59,19 +64,19 @@ func ConvertPCMAudioToWav(PCMFilePath, outputWavFilePath string, rate int32, cha
 		int16(bitsPerSample), // Bits Per Sample
 
 		// data
-		[]byte("data"),            // Subchunk2 ID
-		int32(PCMFileStat.Size()), // Subchunk2 Size
+		[]byte("data"),       // Subchunk2 ID
+		int32(PCMDataLength), // Subchunk2 Size
 	}
 
 	for _, field := range WAVHeaderFields {
-		err = binary.Write(outputFile, binary.LittleEndian, field)
+		err := binary.Write(WAVWriter, binary.LittleEndian, field)
 		if err != nil {
 			return err
 		}
 	}
 
 	// write audio data
-	_, err = io.Copy(outputFile, PCMFile)
+	_, err := io.Copy(WAVWriter, PCMReader)
 	if err != nil {
 		return err
 	}

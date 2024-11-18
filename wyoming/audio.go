@@ -18,6 +18,9 @@ type WyomingAudioData struct {
 	Timestamp string `json:"timestamp"`
 }
 
+// ReceiveAudio writes audio data to writer from "audio-chunk" messages as they are received. ReceiveAudio
+// stops listening for data once an "audio-stop" message is sent. ReceiveAudio returns a WyomingAudioData describing
+// the audio data or an error.
 func (w *WyomingConnection) ReceiveAudio(writer io.Writer) (WyomingAudioData, error) {
 	var audioData WyomingAudioData
 	reader := bufio.NewReader(w.Conn)

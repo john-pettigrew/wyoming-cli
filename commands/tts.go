@@ -4,10 +4,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 
-	"github.com/john-pettigrew/wyoming-cli/utils"
 	"github.com/john-pettigrew/wyoming-cli/wyoming"
 )
 
@@ -34,7 +32,7 @@ func validateInputs(text, serverAddr, outputFilePath string, outputRawData bool)
 	return nil
 }
 
-func main() {
+func parseAndValidateFlags() (string, string, string, string, bool, error) {
 	text := flag.String("text", "", "text to be spoken")
 	serverAddr := flag.String("addr", "localhost:10200", "address and port for tts Wyoming server")
 	outputFilePath := flag.String("output_file", "", "output file path")
@@ -45,57 +43,41 @@ func main() {
 	flag.Parse()
 
 	if err := validateInputs(*text, *serverAddr, *outputFilePath, *outputRawData); err != nil {
+		return "", "", "", "", false, err
+	}
+
+	return *text, *serverAddr, *outputFilePath, *voiceName, *outputRawData, nil
+}
+
+func main() {
+	text, serverAddr, outputFilePath, voiceName, outputRawData, err := parseAndValidateFlags()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 
 	// connect to server
-	wyomingConn, err := wyoming.Connect(*serverAddr)
+	wyomingConn, err := wyoming.Connect(serverAddr)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 	defer wyomingConn.Disconnect()
 
-	voiceServices, err := wyomingConn.GetAvailableServices()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
-	if len(voiceServices.TTS) == 0 {
-		err = errors.New("server does not appear to support TTS")
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
-	var writer io.Writer = os.Stdout
-	var tempFile *os.File
-	if !(*outputRawData) {
-		tempFile, err = os.CreateTemp("", "wyoming-audio")
+	// synthesize audio
+	if outputRawData {
+		err = wyomingConn.SynthesizeAudioToStdout(text, wyoming.SynthesizeVoiceData{Name: voiceName})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		defer tempFile.Close()
-		defer os.Remove(tempFile.Name())
 
-		writer = tempFile
+		return
 	}
 
-	// generate audio
-	audioData, err := wyomingConn.SynthesizeAudio(*text, wyoming.SynthesizeVoiceData{Name: *voiceName}, writer)
+	err = wyomingConn.SynthesizeAudioToWAVFile(text, wyoming.SynthesizeVoiceData{Name: voiceName}, outputFilePath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
-	}
-
-	// convert audio
-	if !(*outputRawData) {
-		err = utils.ConvertPCMAudioToWav(tempFile.Name(), *outputFilePath, int32(audioData.Rate), int16(audioData.Channels), int16(audioData.Width*8))
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
 	}
 }
