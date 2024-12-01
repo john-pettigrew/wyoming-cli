@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -82,4 +83,111 @@ func ConvertPCMAudioToWAV(WAVWriter io.Writer, PCMReader io.Reader, PCMDataLengt
 	}
 
 	return nil
+}
+
+// ReadAudioInfoFromWAVFile returns the audio rate, number of channels, and bitsPerSample read from WAVFile.
+func ReadAudioInfoFromWAVFile(WAVFile *os.File) (int32, int16, int16, error) {
+	type WAVHeaderField struct {
+		Value         []byte
+		RequiredValue []byte
+		Offset        int64
+	}
+
+	WAVHeaderFields := map[string]WAVHeaderField{
+		"chunkID": {
+			Value:         make([]byte, 4),
+			RequiredValue: []byte("RIFF"),
+			Offset:        0,
+		},
+		"chunkSize": {
+			Value:  make([]byte, 4),
+			Offset: 4,
+		},
+		"format": {
+			Value:         make([]byte, 4),
+			RequiredValue: []byte("WAVE"),
+			Offset:        8,
+		},
+		"subchunk1ID": {
+			Value:         make([]byte, 4),
+			RequiredValue: []byte("fmt "),
+			Offset:        12,
+		},
+		"subchunk1Size": {
+			Value:  make([]byte, 4),
+			Offset: 16,
+		},
+		"audioFormat": {
+			Value:         make([]byte, 2),
+			RequiredValue: []byte{0x01, 0x00},
+			Offset:        20,
+		},
+		"channels": {
+			Value:  make([]byte, 2),
+			Offset: 22,
+		},
+		"sampleRate": {
+			Value:  make([]byte, 4),
+			Offset: 24,
+		},
+		"byteRate": {
+			Value:  make([]byte, 4),
+			Offset: 28,
+		},
+		"blockAlign": {
+			Value:  make([]byte, 2),
+			Offset: 32,
+		},
+		"bitsPerSample": {
+			Value:  make([]byte, 2),
+			Offset: 34,
+		},
+		"subchunk2ID": {
+			Value:         make([]byte, 4),
+			RequiredValue: []byte("data"),
+			Offset:        36,
+		},
+	}
+
+	for _, field := range WAVHeaderFields {
+		_, err := WAVFile.Seek(field.Offset, io.SeekStart)
+		if err != nil {
+			return 0, 0, 0, err
+		}
+
+		err = binary.Read(WAVFile, binary.LittleEndian, &field.Value)
+		if err != nil {
+			return 0, 0, 0, err
+		}
+
+		if field.RequiredValue != nil {
+			if !bytes.Equal(field.Value, field.RequiredValue) {
+				return 0, 0, 0, errors.New("invalid WAV header")
+			}
+		}
+	}
+	var rate int32
+	var channels int16
+	var bitsPerSample int16
+
+	rateBuff := bytes.NewBuffer(WAVHeaderFields["sampleRate"].Value)
+	channelsBuff := bytes.NewBuffer(WAVHeaderFields["channels"].Value)
+	bitsPerSampleBuff := bytes.NewBuffer(WAVHeaderFields["bitsPerSample"].Value)
+
+	err := binary.Read(rateBuff, binary.LittleEndian, &rate)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+
+	err = binary.Read(channelsBuff, binary.LittleEndian, &channels)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+
+	err = binary.Read(bitsPerSampleBuff, binary.LittleEndian, &bitsPerSample)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+
+	return rate, channels, bitsPerSample, nil
 }

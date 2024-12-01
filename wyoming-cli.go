@@ -14,6 +14,8 @@ func main() {
 	switch os.Args[1] {
 	case "tts":
 		err = commands.TTS()
+	case "asr":
+		err = commands.ASR()
 	default:
 		err = errors.New("unknown command")
 	}
