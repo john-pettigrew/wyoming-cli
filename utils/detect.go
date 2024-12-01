@@ -46,7 +46,7 @@ func DetectAudioEvent16Bits(reader io.Reader, mode, rate, channels, audioWindowM
 		if currentValue32 > highestValue {
 			highestValue = currentValue32
 		}
-		if currentValue32 < lowestValue {
+		if currentValue32 < lowestValue || lowestValue == 0 {
 			lowestValue = currentValue32
 		}
 	}
