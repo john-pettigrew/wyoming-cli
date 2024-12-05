@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/john-pettigrew/wyoming-cli/utils"
@@ -41,60 +42,6 @@ func (w *WyomingConnection) ASRSupported() bool {
 	return len(w.VoiceServices.ASR) > 0
 }
 
-// TranscribeAudioFromFile transcribes the audio data from a WAV file located at filePath and returns a slice
-// containing the transcriptions with the start and end times.
-func (w *WyomingConnection) TranscribeAudioFromFile(filePath string, audioWindowMS int, soundThreshold, silenceThreshold int32, minSoundDuration, minSilenceDuration int, modelName, language string) ([]Transcription, error) {
-	if !w.ASRSupported() {
-		return nil, errors.New("server does not appear to support ASR")
-	}
-
-	WAVFile, err := os.Open(filePath)
-	if err != nil {
-		return nil, err
-	}
-	defer WAVFile.Close()
-
-	rate, channels, bitsPerSample, err := utils.ReadAudioInfoFromWAVFile(WAVFile)
-	if err != nil {
-		return nil, err
-	}
-
-	var width int = int(bitsPerSample / 8)
-	var transcriptions []Transcription
-	var PCMAudioByteOffset int64 = 40
-
-	if width != 2 {
-		return nil, errors.New("only 16-bit audio is supported")
-	}
-
-	_, err = WAVFile.Seek(PCMAudioByteOffset, io.SeekStart)
-	if err != nil {
-		return nil, err
-	}
-
-	currentTimeOffsetMS := 0
-	for {
-		text, audioEvent, err := w.TranscribeNextAudio(WAVFile, WyomingAudioData{Rate: int(rate), Channels: int(channels), Width: width}, audioWindowMS, currentTimeOffsetMS, soundThreshold, silenceThreshold, minSoundDuration, minSilenceDuration, modelName, language)
-		if err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-				break
-			}
-			return nil, err
-		}
-
-		currentTimeOffsetMS = int(audioEvent.End.Milliseconds())
-
-		err = w.Reconnect()
-		if err != nil {
-			return nil, err
-		}
-
-		transcriptions = append(transcriptions, Transcription{Text: text, Start: audioEvent.Start, End: audioEvent.End})
-	}
-
-	return transcriptions, nil
-}
-
 // TranscribeAudio sends a "transcribe" request to the Wyoming server followed by the audio data from reader and returns the
 // result.
 func (w *WyomingConnection) TranscribeAudio(reader io.Reader, audioData WyomingAudioData, modelName, language string) (string, error) {
@@ -127,17 +74,113 @@ func (w *WyomingConnection) TranscribeAudio(reader io.Reader, audioData WyomingA
 	return transcriptionData.Text, nil
 }
 
-// TranscribeNextAudio detects the next audio segment from reader and requests a transcription from the Wyoming server.
-func (w *WyomingConnection) TranscribeNextAudio(reader io.Reader, audioData WyomingAudioData, audioWindowMS, timeOffsetMS int, soundThreshold, silenceThreshold int32, minSoundDuration, minSilenceDuration int, modelName, language string) (string, utils.AudioEvent, error) {
-	audioEvent, err := utils.DetectNextAudioGroup16Bit(reader, audioData.Rate, audioData.Channels, audioWindowMS, timeOffsetMS, soundThreshold, silenceThreshold, minSoundDuration, minSilenceDuration)
-	if err != nil {
-		return "", utils.AudioEvent{}, err
+func transcribeAudioGroupsWorker(audioData WyomingAudioData, serverAddr, modelName, language string, audioEventChan <-chan utils.AudioEvent, resultsChan chan<- Transcription, errorChan chan<- error, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	for audioEvent := range audioEventChan {
+		w, err := Connect(serverAddr)
+		if err != nil {
+			errorChan <- err
+			return
+		}
+
+		defer w.Disconnect()
+		text, err := w.TranscribeAudio(&audioEvent.SoundBuff, audioData, modelName, language)
+		if err != nil {
+			errorChan <- err
+			return
+		}
+		resultsChan <- Transcription{Text: text, Start: audioEvent.Start, End: audioEvent.End}
+	}
+}
+
+// TranscribeAudioGroups transcribes the audio data from reader and sends the results, containing the
+// transcriptions with the start and end times, to resultsChan as they are generated. Errors are sent to errorsChan.
+// "workersCount" defines the number of transcription requests that are running at once. TranscribeAudioGroups
+// closes resultsChan and returns once an error occurs when reading from reader.
+func TranscribeAudioGroups(reader io.Reader, audioData WyomingAudioData, serverAddr, modelName, language string, workersCount, audioWindowMS, minSoundDuration, minSilenceDuration int, soundThreshold, silenceThreshold int32, resultsChan chan<- Transcription, errorsChan chan<- error) {
+	audioEventChan := make(chan utils.AudioEvent, workersCount)
+	wg := sync.WaitGroup{}
+
+	for i := 0; i < workersCount; i += 1 {
+		wg.Add(1)
+		go transcribeAudioGroupsWorker(audioData, serverAddr, modelName, language, audioEventChan, resultsChan, errorsChan, &wg)
 	}
 
-	text, err := w.TranscribeAudio(&audioEvent.SoundBuff, audioData, modelName, language)
-	if err != nil {
-		return "", utils.AudioEvent{}, err
+	currentTimeOffsetMS := 0
+	for {
+		audioEvent, err := utils.DetectNextAudioGroup16Bit(reader, audioData.Rate, audioData.Channels, audioWindowMS, currentTimeOffsetMS, soundThreshold, silenceThreshold, minSoundDuration, minSilenceDuration)
+		if err != nil {
+			errorsChan <- err
+			break
+		}
+
+		currentTimeOffsetMS = int(audioEvent.End.Milliseconds())
+
+		audioEventChan <- audioEvent
 	}
 
-	return text, audioEvent, nil
+	close(audioEventChan)
+	wg.Wait()
+	close(resultsChan)
+	return
+}
+
+// TranscribeAllAudioGroups transcribes the audio data from reader and returns a slice
+// containing the transcriptions with the start and end times. "workersCount" defines
+// the number of transcription requests that are running at once. EOF and ErrUnexpectedEOF
+// errors are ignored.
+func TranscribeAllAudioGroups(reader io.Reader, audioData WyomingAudioData, serverAddr, modelName, language string, workersCount, audioWindowMS, minSoundDuration, minSilenceDuration int, soundThreshold, silenceThreshold int32) ([]Transcription, error) {
+	resultsChan := make(chan Transcription)
+	errorsChan := make(chan error)
+	var transcriptions []Transcription
+
+	go TranscribeAudioGroups(reader, audioData, serverAddr, modelName, language, workersCount, audioWindowMS, minSoundDuration, minSilenceDuration, soundThreshold, silenceThreshold, resultsChan, errorsChan)
+
+	for {
+		select {
+		case result, ok := <-resultsChan:
+			if !ok {
+				return transcriptions, nil
+			}
+
+			transcriptions = append(transcriptions, result)
+		case err := <-errorsChan:
+			if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+				return nil, err
+			}
+		}
+	}
+}
+
+// TranscribeAllAudioGroupsFromFile transcribes the audio data from a WAV file located at filePath and returns a slice
+// containing the transcriptions with the start and end times.
+func TranscribeAllAudioGroupsFromFile(filePath, modelName, language, serverAddr string, audioWindowMS, minSoundDuration, minSilenceDuration, workerCount int, soundThreshold, silenceThreshold int32) ([]Transcription, error) {
+	WAVFile, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer WAVFile.Close()
+
+	rate, channels, bitsPerSample, PCMAudioByteOffset, err := utils.ReadAudioInfoFromWAVFile(WAVFile)
+	if err != nil {
+		return nil, err
+	}
+
+	var width int = int(bitsPerSample / 8)
+
+	if width != 2 {
+		return nil, errors.New("only 16-bit audio is supported")
+	}
+
+	_, err = WAVFile.Seek(PCMAudioByteOffset, io.SeekStart)
+	if err != nil {
+		return nil, err
+	}
+
+	transcriptions, err := TranscribeAllAudioGroups(WAVFile, WyomingAudioData{Rate: int(rate), Channels: int(channels), Width: width}, serverAddr, modelName, language, workerCount, audioWindowMS, minSoundDuration, minSilenceDuration, soundThreshold, silenceThreshold)
+	if err != nil {
+		return nil, err
+	}
+	return transcriptions, nil
 }

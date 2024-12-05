@@ -85,109 +85,159 @@ func ConvertPCMAudioToWAV(WAVWriter io.Writer, PCMReader io.Reader, PCMDataLengt
 	return nil
 }
 
-// ReadAudioInfoFromWAVFile returns the audio rate, number of channels, and bitsPerSample read from WAVFile.
-func ReadAudioInfoFromWAVFile(WAVFile *os.File) (int32, int16, int16, error) {
+// ReadAudioInfoFromWAVFile returns the audio rate, number of channels, bitsPerSample, and the offset for
+// the PCM audio data read from WAVFile.
+func ReadAudioInfoFromWAVFile(WAVFile *os.File) (int32, int16, int16, int64, error) {
 	type WAVHeaderField struct {
 		Value         []byte
 		RequiredValue []byte
 		Offset        int64
 	}
 
-	WAVHeaderFields := map[string]WAVHeaderField{
-		"chunkID": {
+	headerFields := []WAVHeaderField{
+		{
 			Value:         make([]byte, 4),
 			RequiredValue: []byte("RIFF"),
 			Offset:        0,
 		},
-		"chunkSize": {
-			Value:  make([]byte, 4),
-			Offset: 4,
-		},
-		"format": {
+		{
 			Value:         make([]byte, 4),
 			RequiredValue: []byte("WAVE"),
 			Offset:        8,
 		},
-		"subchunk1ID": {
-			Value:         make([]byte, 4),
-			RequiredValue: []byte("fmt "),
-			Offset:        12,
-		},
-		"subchunk1Size": {
-			Value:  make([]byte, 4),
-			Offset: 16,
-		},
-		"audioFormat": {
+	}
+	var err error
+	for _, headerField := range headerFields {
+		_, err = WAVFile.Seek(headerField.Offset, io.SeekStart)
+		if err != nil {
+			return 0, 0, 0, 0, err
+		}
+
+		err = binary.Read(WAVFile, binary.LittleEndian, &headerField.Value)
+		if err != nil {
+			return 0, 0, 0, 0, err
+		}
+		if !bytes.Equal(headerField.Value, headerField.RequiredValue) {
+			return 0, 0, 0, 0, errors.New("invalid WAV header")
+		}
+	}
+
+	fmtFields := map[string]WAVHeaderField{
+		"format": {
 			Value:         make([]byte, 2),
 			RequiredValue: []byte{0x01, 0x00},
-			Offset:        20,
+			Offset:        0,
 		},
 		"channels": {
 			Value:  make([]byte, 2),
-			Offset: 22,
+			Offset: 2,
 		},
 		"sampleRate": {
 			Value:  make([]byte, 4),
-			Offset: 24,
+			Offset: 4,
 		},
 		"byteRate": {
 			Value:  make([]byte, 4),
-			Offset: 28,
+			Offset: 8,
 		},
 		"blockAlign": {
 			Value:  make([]byte, 2),
-			Offset: 32,
+			Offset: 12,
 		},
 		"bitsPerSample": {
 			Value:  make([]byte, 2),
-			Offset: 34,
-		},
-		"subchunk2ID": {
-			Value:         make([]byte, 4),
-			RequiredValue: []byte("data"),
-			Offset:        36,
+			Offset: 14,
 		},
 	}
 
-	for _, field := range WAVHeaderFields {
-		_, err := WAVFile.Seek(field.Offset, io.SeekStart)
+	var dataOffset int64
+	for {
+		// read ID
+		currentChunkID := make([]byte, 4)
+		err := binary.Read(WAVFile, binary.LittleEndian, &currentChunkID)
 		if err != nil {
-			return 0, 0, 0, err
+			return 0, 0, 0, 0, err
 		}
 
-		err = binary.Read(WAVFile, binary.LittleEndian, &field.Value)
+		// read length
+		var currentChunkLength int32
+		err = binary.Read(WAVFile, binary.LittleEndian, &currentChunkLength)
 		if err != nil {
-			return 0, 0, 0, err
+			return 0, 0, 0, 0, err
 		}
 
-		if field.RequiredValue != nil {
-			if !bytes.Equal(field.Value, field.RequiredValue) {
-				return 0, 0, 0, errors.New("invalid WAV header")
+		// data
+		if bytes.Equal(currentChunkID, []byte("data")) {
+			dataOffset, err = WAVFile.Seek(0, io.SeekCurrent)
+			if err != nil {
+				return 0, 0, 0, 0, err
 			}
+
+			break
+		}
+
+		// fmt
+		if bytes.Equal(currentChunkID, []byte("fmt ")) {
+			fmtOffset, err := WAVFile.Seek(0, io.SeekCurrent)
+			if err != nil {
+				return 0, 0, 0, 0, err
+			}
+
+			for _, field := range fmtFields {
+				_, err = WAVFile.Seek(fmtOffset+field.Offset, io.SeekStart)
+				if err != nil {
+					return 0, 0, 0, 0, err
+				}
+
+				err = binary.Read(WAVFile, binary.LittleEndian, &field.Value)
+				if err != nil {
+					return 0, 0, 0, 0, err
+				}
+
+				if field.RequiredValue != nil {
+					if !bytes.Equal(field.Value, field.RequiredValue) {
+						return 0, 0, 0, 0, errors.New("invalid WAV header")
+					}
+				}
+			}
+
+			_, err = WAVFile.Seek(fmtOffset+int64(currentChunkLength), io.SeekStart)
+			if err != nil {
+				return 0, 0, 0, 0, err
+			}
+
+			continue
+		}
+
+		// advance to next section
+		_, err = WAVFile.Seek(int64(currentChunkLength), io.SeekCurrent)
+		if err != nil {
+			return 0, 0, 0, 0, err
 		}
 	}
+
 	var rate int32
 	var channels int16
 	var bitsPerSample int16
 
-	rateBuff := bytes.NewBuffer(WAVHeaderFields["sampleRate"].Value)
-	channelsBuff := bytes.NewBuffer(WAVHeaderFields["channels"].Value)
-	bitsPerSampleBuff := bytes.NewBuffer(WAVHeaderFields["bitsPerSample"].Value)
+	rateBuff := bytes.NewBuffer(fmtFields["sampleRate"].Value)
+	channelsBuff := bytes.NewBuffer(fmtFields["channels"].Value)
+	bitsPerSampleBuff := bytes.NewBuffer(fmtFields["bitsPerSample"].Value)
 
-	err := binary.Read(rateBuff, binary.LittleEndian, &rate)
+	err = binary.Read(rateBuff, binary.LittleEndian, &rate)
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, 0, 0, 0, err
 	}
 
 	err = binary.Read(channelsBuff, binary.LittleEndian, &channels)
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, 0, 0, 0, err
 	}
 
 	err = binary.Read(bitsPerSampleBuff, binary.LittleEndian, &bitsPerSample)
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, 0, 0, 0, err
 	}
 
-	return rate, channels, bitsPerSample, nil
+	return rate, channels, bitsPerSample, dataOffset, nil
 }

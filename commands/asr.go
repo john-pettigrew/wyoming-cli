@@ -57,7 +57,7 @@ func validateInputsASR(serverAddr, inputFilePath string, inputRawData bool, inpu
 	return nil
 }
 
-func parseAndValidateFlagsASR(currentFlag *flag.FlagSet) (string, string, string, string, bool, int, int, int, int32, int32, int, int, error) {
+func parseAndValidateFlagsASR(currentFlag *flag.FlagSet) (string, string, string, string, bool, int, int, int, int32, int32, int, int, int, error) {
 	serverAddr := currentFlag.String("addr", "localhost:10300", "address and port for asr Wyoming server")
 	inputFilePath := currentFlag.String("input_file", "", "input WAV file path")
 	modelName := currentFlag.String("model-name", "", "name of model")
@@ -67,6 +67,7 @@ func parseAndValidateFlagsASR(currentFlag *flag.FlagSet) (string, string, string
 	inputRawDataRate := currentFlag.Int("input-raw-rate", 22050, "audio rate from stdin")
 	inputRawDataChannels := currentFlag.Int("input-raw-channels", 1, "number of audio channels from stdin")
 
+	numWorkers := currentFlag.Int("num-workers", 3, "number of workers")
 	audioWindowMS := currentFlag.Int("audio-window-ms", 100, "window size in MS to use for detecting sound")
 	soundThreshold := currentFlag.Int("sound-threshold", 20000, "level of noise for a sound event")
 	silenceThreshold := currentFlag.Int("silence-threshold", 2000, "level of noise for a silence event")
@@ -87,30 +88,22 @@ func parseAndValidateFlagsASR(currentFlag *flag.FlagSet) (string, string, string
 		*minSoundDuration,
 		*minSilenceDuration,
 	); err != nil {
-		return "", "", "", "", false, 0, 0, 0, 0, 0, 0, 0, err
+		return "", "", "", "", false, 0, 0, 0, 0, 0, 0, 0, 0, err
 	}
 
-	return *serverAddr, *inputFilePath, *modelName, *language, *inputRawData, *inputRawDataRate, *inputRawDataChannels, *audioWindowMS, int32(*soundThreshold), int32(*silenceThreshold), *minSoundDuration, *minSilenceDuration, nil
+	return *serverAddr, *inputFilePath, *modelName, *language, *inputRawData, *inputRawDataRate, *inputRawDataChannels, *audioWindowMS, int32(*soundThreshold), int32(*silenceThreshold), *minSoundDuration, *minSilenceDuration, *numWorkers, nil
 }
 
 func ASR() error {
 	currentFlag := flag.NewFlagSet("asr", flag.ExitOnError)
 
-	serverAddr, inputFilePath, modelName, language, inputRawData, inputRawDataRate, inputRawDataChannels, audioWindowMS, soundThreshold, silenceThreshold, minSoundDuration, minSilenceDuration, err := parseAndValidateFlagsASR(currentFlag)
+	serverAddr, inputFilePath, modelName, language, inputRawData, inputRawDataRate, inputRawDataChannels, audioWindowMS, soundThreshold, silenceThreshold, minSoundDuration, minSilenceDuration, numWorkers, err := parseAndValidateFlagsASR(currentFlag)
 	if err != nil {
 		return err
 	}
-
-	// connect to server
-	wyomingConn, err := wyoming.Connect(serverAddr)
-	if err != nil {
-		return err
-	}
-
-	defer wyomingConn.Disconnect()
 
 	if !inputRawData {
-		transcriptions, err := wyomingConn.TranscribeAudioFromFile(inputFilePath, audioWindowMS, soundThreshold, silenceThreshold, minSoundDuration, minSilenceDuration, modelName, language)
+		transcriptions, err := wyoming.TranscribeAllAudioGroupsFromFile(inputFilePath, modelName, language, serverAddr, audioWindowMS, minSoundDuration, minSilenceDuration, numWorkers, soundThreshold, silenceThreshold)
 		if err != nil {
 			return err
 		}
@@ -124,19 +117,20 @@ func ASR() error {
 		return nil
 	}
 
+	resultsChan := make(chan wyoming.Transcription)
+	errorsChan := make(chan error)
+
+	go wyoming.TranscribeAudioGroups(os.Stdin, wyoming.WyomingAudioData{Rate: inputRawDataRate, Width: 2, Channels: inputRawDataChannels}, serverAddr, modelName, language, numWorkers, audioWindowMS, minSoundDuration, minSilenceDuration, soundThreshold, silenceThreshold, resultsChan, errorsChan)
+
 	for {
-		text, _, err := wyomingConn.TranscribeNextAudio(os.Stdin, wyoming.WyomingAudioData{Rate: inputRawDataRate, Width: 2, Channels: inputRawDataChannels}, audioWindowMS, 0, soundThreshold, silenceThreshold, minSoundDuration, minSilenceDuration, modelName, language)
-		if err != nil {
-			return err
-		}
+		select {
+		case result, ok := <-resultsChan:
+			if !ok {
+				return nil
+			}
 
-		_, err = fmt.Printf("'%s'\n", text)
-		if err != nil {
-			return err
-		}
-
-		err = wyomingConn.Reconnect()
-		if err != nil {
+			fmt.Println(result.Text)
+		case err := <-errorsChan:
 			return err
 		}
 	}
