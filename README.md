@@ -1,11 +1,17 @@
-# Wyoming CLI
-A client for Wyoming servers written in Go.
+# Wyoming CLI 🔊
+A command-line client for Wyoming servers written in Go.
 
 > Note: This project is currently in alpha!
 
-Supports:
-- TTS
-- ASR
+## Features:
+- TTS (Text to Speech) - output to file or stdout
+- ASR (Automatic Speech Recognition) - input from file or stdin
+
+## Installation
+To install, run:
+```
+go install github.com/john-pettigrew/wyoming-cli@latest
+```
 
 ## Examples
 
