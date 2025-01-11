@@ -115,7 +115,7 @@ func TranscribeAudioGroups(reader io.Reader, audioData WyomingAudioData, serverA
 			break
 		}
 
-		currentTimeOffsetMS = int(audioEvent.End.Milliseconds())
+		currentTimeOffsetMS = int(audioEvent.End.Milliseconds()) + minSilenceDuration
 
 		audioEventChan <- audioEvent
 	}

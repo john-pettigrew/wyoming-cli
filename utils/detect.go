@@ -9,8 +9,8 @@ import (
 	"time"
 )
 
-var DETECT_NOISE_MODE int = 0
-var DETECT_SILENCE_MODE int = 1
+const DETECT_NOISE_MODE int = 0
+const DETECT_SILENCE_MODE int = 1
 
 type AudioEvent struct {
 	Start     time.Duration
@@ -60,60 +60,71 @@ func DetectAudioEvent16Bits(reader io.Reader, mode, rate, channels, audioWindowM
 	return false, nil
 }
 
-// DetectNextAudioGroup16Bit reads from reader and detects the next segment of audio. The AudioEvent returned contains the start
-// and end time offset by offsetMS and a buffer containing the audio data.
-func DetectNextAudioGroup16Bit(reader io.Reader, rate, channels, audioWindowMS, offsetMS int, soundThreshold, silenceThreshold int32, soundDurationMS, silenceDurationMS int) (AudioEvent, error) {
-	var startTimeMS int = offsetMS
-	var endTimeMS int
-
-	soundEvents := 0
-	silenceEvents := 0
-	minSoundEvents := soundDurationMS / audioWindowMS
-	minSilenceEvents := silenceDurationMS / audioWindowMS
+// DetectAudioEventDuration16Bits reads from reader and detects an audio event defined by detectMode, durationMS, and audioThreshold. DetectAudioEventDuration16Bits
+// returns the offset of the start of the event in MS and a buffer containing the audio of the event. If detectMode is set to DETECT_SILENCE_MODE and an EOF error
+// is returned while reading from reader then durationMS is ignored and DetectAudioEventDuration16Bits returns a silence event.
+func DetectAudioEventDuration16Bits(reader io.Reader, rate, channels, durationMS, audioWindowMS, detectMode int, audioThreshold int32) (int, bytes.Buffer, error) {
+	events := 0
+	minEvents := durationMS / audioWindowMS
 
 	soundBuff := bytes.Buffer{}
 	teeReader := io.TeeReader(reader, &soundBuff)
+	startTimeMS := 0
+	currentOffsetMS := 0
+
 	for {
-		hasSound, err := DetectAudioEvent16Bits(teeReader, DETECT_NOISE_MODE, rate, channels, audioWindowMS, soundThreshold)
+		eventDetected, err := DetectAudioEvent16Bits(teeReader, detectMode, rate, channels, audioWindowMS, audioThreshold)
 		if err != nil {
-			return AudioEvent{}, err
+			if errors.Is(err, io.EOF) && detectMode == DETECT_SILENCE_MODE {
+				if events == 0 {
+					startTimeMS = currentOffsetMS
+					soundBuff.Reset()
+				}
+				return startTimeMS, soundBuff, nil
+			}
+
+			return 0, bytes.Buffer{}, err
 		}
 
-		if hasSound {
-			soundEvents += 1
+		if eventDetected {
+			if events == 0 {
+				startTimeMS = currentOffsetMS
+			}
+			events += 1
 		} else {
 			soundBuff.Reset()
-			soundEvents = 0
+			events = 0
 		}
 
-		if soundEvents >= minSoundEvents {
+		if events >= minEvents {
 			break
 		}
 
-		startTimeMS += audioWindowMS
+		currentOffsetMS += audioWindowMS
 	}
 
-	endTimeMS = startTimeMS
+	return startTimeMS, soundBuff, nil
+}
 
-	for {
-		hasSilence, err := DetectAudioEvent16Bits(teeReader, DETECT_SILENCE_MODE, rate, channels, audioWindowMS, silenceThreshold)
-		if err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-				break
-			}
-			return AudioEvent{}, err
-		}
-
-		if hasSilence {
-			silenceEvents += 1
-		} else {
-			silenceEvents = 0
-		}
-
-		if silenceEvents >= minSilenceEvents {
-			break
-		}
-		endTimeMS += audioWindowMS
+// DetectNextAudioGroup16Bit reads from reader and detects the next segment of audio. The AudioEvent returned contains the start
+// and end time offset by offsetMS and a buffer containing the audio data.
+func DetectNextAudioGroup16Bit(reader io.Reader, rate, channels, audioWindowMS, offsetMS int, soundThreshold, silenceThreshold int32, soundDurationMS, silenceDurationMS int) (AudioEvent, error) {
+	soundOffsetMS, soundBuff, err := DetectAudioEventDuration16Bits(reader, rate, channels, soundDurationMS, audioWindowMS, DETECT_NOISE_MODE, soundThreshold)
+	if err != nil {
+		return AudioEvent{}, err
 	}
+
+	startTimeMS := soundOffsetMS + offsetMS
+
+	teeReader := io.TeeReader(reader, &soundBuff)
+	silenceOffsetMS, silenceBuff, err := DetectAudioEventDuration16Bits(teeReader, rate, channels, silenceDurationMS, audioWindowMS, DETECT_SILENCE_MODE, silenceThreshold)
+	if err != nil {
+		return AudioEvent{}, err
+	}
+
+	soundBuff.Truncate(soundBuff.Len() - silenceBuff.Len())
+
+	endTimeMS := startTimeMS + soundDurationMS + silenceOffsetMS
+
 	return AudioEvent{Start: time.Millisecond * time.Duration(startTimeMS), End: time.Millisecond * time.Duration(endTimeMS), SoundBuff: soundBuff}, nil
 }
