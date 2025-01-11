@@ -27,8 +27,14 @@ func validateInputsASR(serverAddr, inputFilePath string, inputRawData bool, inpu
 	if minSoundDuration <= 0 {
 		return errors.New("min-sound-duration-ms must be greater than 0")
 	}
+	if minSoundDuration%audioWindowMS != 0 {
+		return errors.New("min-sound-duration-ms must be divisible by audio-window-ms")
+	}
 	if minSilenceDuration <= 0 {
 		return errors.New("min-silence-duration-ms must be greater than 0")
+	}
+	if minSilenceDuration%audioWindowMS != 0 {
+		return errors.New("min-silence-duration-ms must be divisible by audio-window-ms")
 	}
 
 	if inputRawData {
